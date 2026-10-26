@@ -2,7 +2,7 @@
 import * as cdk from 'aws-cdk-lib';
 import { Aspects, Tags } from 'aws-cdk-lib';
 import { AwsSolutionsChecks } from 'cdk-nag';
-import { FoundationStack } from '../lib/stacks/foundation-stack';
+import { PipelineStack } from '../lib/pipeline-stack';
 
 // This AWS project is pinned to a single account/Region by the organization's
 // "new AWS experience" constraints — no cross-Region resources are permitted.
@@ -27,8 +27,14 @@ Tags.of(app).add('ManagedBy', 'CDK');
 
 Aspects.of(app).add(new AwsSolutionsChecks({ verbose: true }));
 
-new FoundationStack(app, 'Metriever-Foundation', {
+// CodeConnections ARNs embed the account ID; build it from `env.account`
+// (never hardcoded) rather than pasting the full ARN into source control.
+const connectionId = '3b7d81d0-55f6-43de-8524-ae37139a0727';
+const connectionArn = `arn:aws:codeconnections:${env.region}:${env.account}:connection/${connectionId}`;
+
+new PipelineStack(app, 'Metriever-Pipeline', {
   env,
-  budgetAlertEmail: app.node.tryGetContext('budgetAlertEmail'),
-  monthlyBudgetLimitUsd: 100,
+  connectionArn,
+  devBudgetAlertEmail: app.node.tryGetContext('devBudgetAlertEmail'),
+  prodBudgetAlertEmail: app.node.tryGetContext('prodBudgetAlertEmail'),
 });
