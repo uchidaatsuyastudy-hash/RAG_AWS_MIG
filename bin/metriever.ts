@@ -37,4 +37,6 @@ new PipelineStack(app, 'Metriever-Pipeline', {
   connectionArn,
   devBudgetAlertEmail: app.node.tryGetContext('devBudgetAlertEmail'),
   prodBudgetAlertEmail: app.node.tryGetContext('prodBudgetAlertEmail'),
+  devIngestionFailureAlertEmail: app.node.tryGetContext('devIngestionFailureAlertEmail'),
+  prodIngestionFailureAlertEmail: app.node.tryGetContext('prodIngestionFailureAlertEmail'),
 });

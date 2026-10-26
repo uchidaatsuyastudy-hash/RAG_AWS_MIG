@@ -5,11 +5,14 @@ import { AwsSolutionsChecks } from 'cdk-nag';
 import { FoundationStack } from '../stacks/foundation-stack';
 import { DataStack } from '../stacks/data-stack';
 import { KnowledgeBaseStack } from '../stacks/knowledge-base-stack';
+import { IngestionPipelineStack } from '../stacks/ingestion-pipeline-stack';
 
 export interface ApplicationStageProps extends cdk.StageProps {
   /** Email address to receive AWS Budgets alerts for this stage's spend. */
   readonly budgetAlertEmail?: string;
   readonly monthlyBudgetLimitUsd?: number;
+  /** Email address to receive ingestion-failure alerts for this stage. */
+  readonly ingestionFailureAlertEmail?: string;
 }
 
 /**
@@ -34,9 +37,17 @@ export class ApplicationStage extends cdk.Stage {
       dataKey: foundation.dataKey,
     });
 
-    new KnowledgeBaseStack(this, 'Metriever-KnowledgeBase', {
+    const kb = new KnowledgeBaseStack(this, 'Metriever-KnowledgeBase', {
       rawDocsBucket: data.rawDocsBucket,
       dataKey: foundation.dataKey,
+    });
+
+    new IngestionPipelineStack(this, 'Metriever-IngestionPipeline', {
+      changeQueue: data.changeQueue,
+      dataKey: foundation.dataKey,
+      knowledgeBaseId: kb.knowledgeBaseId,
+      dataSourceId: kb.dataSourceId,
+      failureAlertEmail: props.ingestionFailureAlertEmail,
     });
   }
 }

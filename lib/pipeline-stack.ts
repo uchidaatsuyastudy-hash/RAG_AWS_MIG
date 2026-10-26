@@ -12,6 +12,8 @@ export interface PipelineStackProps extends cdk.StackProps {
   readonly connectionArn: string;
   readonly devBudgetAlertEmail?: string;
   readonly prodBudgetAlertEmail?: string;
+  readonly devIngestionFailureAlertEmail?: string;
+  readonly prodIngestionFailureAlertEmail?: string;
 }
 
 /**
@@ -55,6 +57,7 @@ export class PipelineStack extends cdk.Stack {
         env: { account: this.account, region: this.region },
         budgetAlertEmail: props.devBudgetAlertEmail,
         monthlyBudgetLimitUsd: 20,
+        ingestionFailureAlertEmail: props.devIngestionFailureAlertEmail,
       }),
     );
     devStage.addPost(
@@ -68,6 +71,7 @@ export class PipelineStack extends cdk.Stack {
         env: { account: this.account, region: this.region },
         budgetAlertEmail: props.prodBudgetAlertEmail,
         monthlyBudgetLimitUsd: 80,
+        ingestionFailureAlertEmail: props.prodIngestionFailureAlertEmail,
       }),
       {
         pre: [new pipelines.ManualApprovalStep('PromoteToProd')],
