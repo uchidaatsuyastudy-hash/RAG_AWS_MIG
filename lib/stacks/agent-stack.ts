@@ -13,7 +13,11 @@ export interface AgentStackProps extends cdk.StackProps {
   readonly guardrailId: string;
   readonly guardrailVersion: string;
   readonly logsKey: kms.IKey;
-  /** On-demand Claude model ID available in this Region (no cross-Region inference profile — see FoundationStack note on Region pinning). */
+  /** Claude model ID or inference profile ID to invoke. Defaults to the `au.`
+   * geographic inference profile — Claude Sonnet 4.6 does not support
+   * on-demand (direct) invocation, so a profile is required; `au.` keeps
+   * routing within the Australia geography (ap-southeast-2/ap-southeast-4)
+   * rather than a `global.` profile that could route anywhere. */
   readonly modelId?: string;
 }
 
@@ -27,7 +31,7 @@ export class AgentStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: AgentStackProps) {
     super(scope, id, props);
 
-    const modelId = props.modelId ?? 'anthropic.claude-sonnet-4-6';
+    const modelId = props.modelId ?? 'au.anthropic.claude-sonnet-4-6';
 
     const logGroup = new logs.LogGroup(this, 'AgentLogs', {
       encryptionKey: props.logsKey,
@@ -55,11 +59,21 @@ export class AgentStack extends cdk.Stack {
 
     props.retrievalFunction.grantInvoke(this.agentFunction);
 
+    // Calling an inference profile requires permission on the profile ARN
+    // *and* the underlying foundation-model ARN(s) it routes to. The `au.`
+    // profile specifically routes within ap-southeast-2/ap-southeast-4 (per
+    // `aws bedrock get-inference-profile`); a different profile would need
+    // different underlying Regions here.
+    const baseModelId = modelId.replace(/^(au|global)\./, '');
     this.agentFunction.addToRolePolicy(
       new iam.PolicyStatement({
         sid: 'InvokeModelForAgentLoop',
         actions: ['bedrock:InvokeModel', 'bedrock:InvokeModelWithResponseStream'],
-        resources: [`arn:${this.partition}:bedrock:${this.region}::foundation-model/${modelId}`],
+        resources: [
+          `arn:${this.partition}:bedrock:${this.region}:${this.account}:inference-profile/${modelId}`,
+          `arn:${this.partition}:bedrock:ap-southeast-2::foundation-model/${baseModelId}`,
+          `arn:${this.partition}:bedrock:ap-southeast-4::foundation-model/${baseModelId}`,
+        ],
       }),
     );
     this.agentFunction.addToRolePolicy(
