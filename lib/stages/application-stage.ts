@@ -6,6 +6,10 @@ import { FoundationStack } from '../stacks/foundation-stack';
 import { DataStack } from '../stacks/data-stack';
 import { KnowledgeBaseStack } from '../stacks/knowledge-base-stack';
 import { IngestionPipelineStack } from '../stacks/ingestion-pipeline-stack';
+import { RetrievalServiceStack } from '../stacks/retrieval-service-stack';
+import { GuardrailStack } from '../stacks/guardrail-stack';
+import { AgentStack } from '../stacks/agent-stack';
+import { ObservabilityStack } from '../stacks/observability-stack';
 
 export interface ApplicationStageProps extends cdk.StageProps {
   /** Email address to receive AWS Budgets alerts for this stage's spend. */
@@ -42,12 +46,37 @@ export class ApplicationStage extends cdk.Stage {
       dataKey: foundation.dataKey,
     });
 
-    new IngestionPipelineStack(this, 'Metriever-IngestionPipeline', {
+    const ingestion = new IngestionPipelineStack(this, 'Metriever-IngestionPipeline', {
       changeQueue: data.changeQueue,
       dataKey: foundation.dataKey,
       knowledgeBaseId: kb.knowledgeBaseId,
       dataSourceId: kb.dataSourceId,
       failureAlertEmail: props.ingestionFailureAlertEmail,
+    });
+
+    const retrievalService = new RetrievalServiceStack(this, 'Metriever-RetrievalService', {
+      knowledgeBaseIds: [kb.knowledgeBaseId],
+      logsKey: foundation.logsKey,
+    });
+
+    const guardrail = new GuardrailStack(this, 'Metriever-Guardrail', {
+      dataKey: foundation.dataKey,
+    });
+
+    const agent = new AgentStack(this, 'Metriever-Agent', {
+      retrievalFunction: retrievalService.retrievalFunction,
+      guardrailId: guardrail.guardrailId,
+      guardrailVersion: guardrail.guardrailVersion,
+      logsKey: foundation.logsKey,
+    });
+
+    new ObservabilityStack(this, 'Metriever-Observability', {
+      logsKey: foundation.logsKey,
+      knowledgeBaseId: kb.knowledgeBaseId,
+      guardrailId: guardrail.guardrailId,
+      retrievalFunction: retrievalService.retrievalFunction,
+      agentFunction: agent.agentFunction,
+      ingestionStateMachine: ingestion.stateMachine,
     });
   }
 }

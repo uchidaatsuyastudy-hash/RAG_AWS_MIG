@@ -1,24 +1,129 @@
-# Metriever AWS移行プロジェクト 進捗ドキュメント
+# Metriever AWS移行プロジェクト — 学習用ドキュメント
 
-最終更新: 2026-10-26
+最終更新: 2026-10-27
 
-## 1. プロジェクトの目的
+このドキュメントは、進捗記録であると同時に「何を」「なぜ」「どう」作っているかを、AWSの各サービスに詳しくない人でも読めるように解説した学習用テキストです。
 
-`Metriever/PDF/` にあるLangChain/LangGraphベースのRAG技術解説資料（7本）を題材に、同等以上のRAGアプリケーションを **AWS Bedrockのマネージド機能** で構築し直す。単なる実装だけでなく、CDK(TypeScript)によるIaC化と、CI/CDデプロイパイプライン・データ取り込みパイプラインを備えた「本番運用を見据えた開発プロセス」を確立することが目的。
+---
 
-## 2. ここまでの技術的な意思決定
+## 1. このプロジェクトは何を作っているのか
 
-| 決定事項 | 理由 |
-|---|---|
-| LLM/RAG基盤をAzure OpenAIからAWS Bedrockへ全面移行 | 既存資料のRetrieval Grader・Query Decomposition・複数DB横断検索は、Bedrockの`AgenticRetrieveStream`で代替可能と判明したため |
-| Managed Knowledge Base (MKB) を採用 | チャンク分割・埋め込み・ベクトルストアをAWSが管理し、インフラ構築が不要なため |
-| IaC: AWS CDK (TypeScript) | チームのAWS標準に合わせ、型安全性と再利用性を優先 |
-| CDKプロジェクトは`Metriever/infra/`に配置、独立したGitリポジトリ化 | 既存のuv管理Pythonプロジェクト（学習用資料）と、本番インフラコードを分離するため |
-| GitHubリポジトリは`uchidaatsuyastudy-hash/RAG_AWS_MIG`（Public） | ユーザー指定。Public化に伴い、AWSアカウントIDは環境変数(`CDK_DEFAULT_ACCOUNT`)経由に変更し、ソースコードに直接書き込まない設計に修正済み |
-| ブランチ戦略: トランクベース（`main`1本） | CDK Pipelinesが「同じパイプライン実行内でDev→承認→Prodと昇格する」構成のため、環境ごとのブランチ分岐は不要と判断 |
-| 社内PDF資料は実際のKnowledge Baseに入れない | ユーザー指示により、検証用データはWebから取得した公開ドキュメント（AWS Well-Architected Framework、Attention Is All You Need論文）に差し替え済み |
+### 1.1 もともとの題材
 
-## 3. 全体アーキテクチャ
+`Metriever/PDF/` には、LangChain/LangGraphというPythonのライブラリを使ってRAG（Retrieval Augmented Generation＝検索拡張生成）システムを作るための技術解説資料が7本ある。RAGとは、「ChatGPTのような生成AIに、社内文書などの外部データを検索させてから回答させる」仕組みのこと。生成AI単体では知らない情報（自社の規定やマニュアルなど）について、正確な回答をさせるために使われる。
+
+### 1.2 このプロジェクトでやっていること
+
+その7本の資料が実現している機能を、**LangChainを自前のPythonコードで組む代わりに、AWSのマネージドサービス（AWSが用意してくれる既製の部品）を組み合わせて再現する**。さらに、作ったインフラを「コードとして」管理し（IaC = Infrastructure as Code）、変更を安全に・自動的に本番環境へ反映できる仕組み（CI/CDパイプライン）まで作り込む。
+
+一言でいうと：**「資料を読んで理解する」から「同じことをAWS上で実際に動かす」へのステップアップ**。
+
+---
+
+## 2. 使っているAWSサービスの役割（初学者向け解説）
+
+このプロジェクトでは数多くのAWSサービスを組み合わせている。それぞれ「何をしてくれる部品なのか」を日常の例えとあわせて説明する。
+
+| サービス | 何をするものか | 例えるなら |
+|---|---|---|
+| **Amazon S3** | ファイルを保存する倉庫。今回はPDF等の元ドキュメントを置く場所として使用 | 本棚 |
+| **Amazon Bedrock Knowledge Base** | 倉庫（S3）にある文書を読み込み、AIが検索しやすい形に変換して保管する専門業者 | 図書館の司書（詳細は3章） |
+| **AWS KMS** | データを暗号化するための「鍵」を管理するサービス | 金庫の鍵の管理人 |
+| **Amazon SQS** | メッセージ（「ファイルが変わったよ」等の通知）を一時的に貯めておく郵便受け | 郵便受け |
+| **AWS Step Functions** | 複数の処理ステップを順番通りに実行・管理する仕組み（「まずAをやって、次にBを確認して、だめならCする」という手順書そのもの） | 業務フローチャートの実行役 |
+| **Amazon EventBridge Pipes** | SQSに溜まったメッセージを、一定時間分まとめてStep Functionsに流す「仕分け係」 | 郵便局の集荷担当（まとめて1回で配達） |
+| **Amazon EventBridge Scheduler** | 「毎日3時に実行」のような時間指定の自動実行（目覚まし時計） | 目覚まし時計 |
+| **Amazon SNS** | 「失敗したよ」等の通知をメールなどに送る仕組み | 緊急連絡網 |
+| **Amazon CloudWatch** | システムの状態を監視し、異常があればアラームを鳴らす | 見張り番 |
+| **AWS CodePipeline / CodeBuild / CodeConnections** | GitHubにコードをpushすると、自動でビルド・テスト・デプロイしてくれる一連の工場ライン | 自動組み立てライン |
+| **AWS CloudFormation** | 「こういうインフラが欲しい」という設計図（テンプレート）を渡すと、その通りにAWS上にリソースを作ってくれる仕組み。CDKはこの設計図をTypeScriptで書けるようにする道具 | 建築の施工図＋施工会社 |
+| **AWS IAM** | 「誰が」「何に対して」「何をしてよいか」を管理する権限システム | 社員証とセキュリティゲート |
+
+---
+
+## 3. Amazon Bedrock Knowledge Base は具体的に何をしているのか
+
+これが今回の中核なので、特に詳しく説明する。
+
+### 3.1 作成時（`create-knowledge-base`）
+
+「ナレッジベースを作る」とは、検索エンジンの“器”を1つ用意すること。この時点では中身は空っぽ。
+
+### 3.2 データソースを接続する（`create-data-source`）
+
+「どこのS3バケットを見に行けばいいか」をナレッジベースに教える。これも、ドアを設置するだけで、まだ中の文書は読み込まれていない。
+
+### 3.3 取り込みジョブ（`start-ingestion-job`）を実行すると内部で起きていること
+
+ここがAIが「賢くなる」実際の処理で、裏側では以下のパイプラインが動いている（Managed Knowledge Baseの場合、すべてAWSが自動で行う）。
+
+```
+① S3から対象ファイルを取得
+       ↓
+② ファイルを解析（パース）
+   - PDFの場合、ページごとにテキスト・表・画像の位置を認識する
+       ↓
+③（オプション）画像の内容をAIで説明文化する「メディア抽出」
+   - 図やグラフが「何を示しているか」をAIモデル（画像を理解できるモデル）に読み取らせ、
+     テキストの説明として追加する
+       ↓
+④ テキストを「チャンク」という小さな単位に分割する
+   - 1つのチャンクは数百〜1000文字程度。後で検索するときの最小単位になる
+       ↓
+⑤ 各チャンクを「埋め込みベクトル」に変換する（Embedding）
+   - 文章の意味を、数百〜数千個の数字の列（ベクトル）として表現する
+   - 意味が近い文章ほど、ベクトル同士の距離が近くなる
+       ↓
+⑥ ベクトルとテキストを、検索用のデータベース（ベクトルストア）に保存する
+       ↓
+⑦ ジョブのステータスが COMPLETE になる
+```
+
+Managed Knowledge Base（マネージドKB）を選んだ理由は、②〜⑥の処理（パース・チャンク分割・埋め込みモデルの選定・ベクトルストアの構築）を**すべてAWSが自動でやってくれる**ため。自分で選ぶ・管理する必要があるのは「どのS3バケットを見るか」だけで済む。
+
+### 3.4 検索時（`Retrieve` / `AgenticRetrieveStream`）
+
+ユーザーの質問も同じように埋め込みベクトルに変換し、保存されているチャンクのベクトルと「意味の近さ」を比較して、関連度の高いチャンクを取り出す。これが検索結果として返ってくる。
+
+---
+
+## 4. なぜ「2つのドキュメントの同期に2〜3時間」かかったのか
+
+実際に発生した事象: AWS Well-Architected Frameworkのホワイトペーパー（約14MB）と論文"Attention Is All You Need"（約2MB）、合計たった2つのPDFファイルの取り込みに、2〜3時間という異常に長い時間がかかった。
+
+### 4.1 考えられる原因（確度が高い順）
+
+**① 画像抽出（メディア抽出）がデフォルトで有効になっていたこと（最有力）**
+
+データソースの設定を確認したところ、以下の設定が**何も指定していないのにデフォルトでONになっていた**ことが判明している。
+
+```json
+"mediaExtractionConfiguration": {
+  "imageExtractionConfiguration": { "imageExtractionStatus": "ENABLED" }
+}
+```
+
+これは上記3.3節の「③ メディア抽出」のステップで、PDF内の**すべての図・グラフ・イラストを1枚ずつAIモデルに読み込ませて説明文を生成する**処理。
+
+- AWS Well-Architected Frameworkは120ページ以上あり、図表が非常に多い資料
+- 論文側も数式・グラフを含む
+- 画像1枚ごとにAIモデルを呼び出すため、画像の枚数分だけ処理が直列に（＝1枚ずつ順番に）積み重なり、時間がかかったと考えられる
+
+**② Managed Knowledge Base自体が比較的新しいサービスであること**
+
+AWSが2025年以降に提供を広げている新しいマネージド機能であり、特に`ap-southeast-2`（シドニー）のような、米国本土以外のリージョンでは、裏側の処理基盤のキャパシティや最適化が十分でない可能性がある。これは実際に、過去の取り込みジョブが`IN_PROGRESS`のまま約19分進捗ゼロで固まり、`stop-ingestion-job`を実行しても`STOPPING`のまま応答しなくなるという明確な異常が発生したことからも裏付けられる（最終的にはナレッジベースごと作り直すことで解消した）。
+
+**③ 裏付けとなるログがまだない**
+
+CloudTrailのデータイベント記録やCloudWatch Logsをこの時点ではまだ有効化していなかったため（Phase 6で対応予定）、①②はいずれも状況証拠からの推測であり、確定した原因ではない。
+
+### 4.2 対応方針（ユーザー判断: 現状維持）
+
+画像抽出を無効化すれば時間短縮が見込めると提案したが、**ユーザーの判断により画像抽出は有効のまま維持する**ことになった（図表の内容も検索対象にしたいため）。したがって、取り込みに数時間かかること自体は許容し、Phase 4以降の検証では「取り込みには時間がかかるもの」という前提でスケジュールを組む。原因の裏付け（CloudTrail/CloudWatch Logsでの確認）はPhase 6の観測性強化で改めて行う。
+
+---
+
+## 5. 全体アーキテクチャ（現時点）
 
 ```
 GitHub(main) --push--> CodeConnections --> CodePipeline(Metriever-Pipeline)
@@ -26,65 +131,139 @@ GitHub(main) --push--> CodeConnections --> CodePipeline(Metriever-Pipeline)
                                    Source → Build(Synth) → UpdatePipeline(SelfMutate)
                                               │
                                               ▼
-                                       Dev Stage（自動デプロイ）
-                                   Metriever-Foundation（KMS鍵、Budgets）
-                                   Metriever-Data（S3生データバケット＋アクセスログ）
-                                   Metriever-KnowledgeBase（Bedrock Managed KB）
-                                   SmokeTest
+                                       Dev Stage（1回のデプロイで全スタックを同時構築）
+                                   ┌─────────────────────────────────────┐
+                                   │ Metriever-Foundation                  │
+                                   │   KMS鍵（ログ用/データ用）, Budgets    │
+                                   │                                       │
+                                   │ Metriever-Data                        │
+                                   │   S3生データバケット(暗号化・ログ付)   │
+                                   │   変更通知SQSキュー＋DLQ               │
+                                   │                                       │
+                                   │ Metriever-KnowledgeBase                │
+                                   │   Bedrock Managed Knowledge Base       │
+                                   │   S3マネージドコネクタ(DataSource)     │
+                                   │                                       │
+                                   │ Metriever-IngestionPipeline             │
+                                   │   EventBridge Pipe(SQSを5分でバッチ化) │
+                                   │   Step Functions(取り込みジョブの監視) │
+                                   │   SNS(失敗通知) + CloudWatchアラーム   │
+                                   │   EventBridge Scheduler(毎日の安全網) │
+                                   └─────────────────────────────────────┘
                                               │
                                      手動承認(PromoteToProd)
                                               │
                                               ▼
-                                       Prod Stage（承認後デプロイ）
-                                   ※同じ3スタックをProd環境に展開
+                                       Prod Stage（承認後、同じ構成をもう一式）
 ```
 
-## 4. これまでに完了したこと
+**ポイント**: 「1回のデプロイでまとめて構築する」というのはすでに実現している構成。コードを書き終えてから1回だけ`git push`すれば、パイプラインが1回走り、以下の8スタックが1回の実行の中で連続して全部デプロイされる。
 
-### Phase 0: プロジェクト基盤（完了）
-- `Metriever/infra/`にCDK TypeScriptプロジェクトを新規作成
-- gitが未インストールだったためwingetで導入し、リポジトリ初期化
-- アカウント`841535407111`・リージョン`ap-southeast-2`へCDKブートストラップ
-- `FoundationStack`実装: KMS CMK（ログ用・データ用）、cdk-nagセキュリティベースライン、AWS Budgetsコストアラート
-- 実装中、計画で想定していた`cdk-nag` v3系がAPIを刷新していたことが判明し、安定版v2.38.2に固定して対応
+```
+Dev / Prod Stage（最終形）
+├── Metriever-Foundation       KMS鍵, Budgets
+├── Metriever-Data             S3生データバケット, 変更通知SQS+DLQ
+├── Metriever-KnowledgeBase    Bedrock Managed Knowledge Base
+├── Metriever-IngestionPipeline  取り込み自動化(Step Functions等)
+├── Metriever-RetrievalService  AgenticRetrieveStreamラッパーLambda
+├── Metriever-Guardrail         コンテンツフィルタ・PIIマスキング
+├── Metriever-Agent             RAG/一般知識ルーティングLambda
+└── Metriever-Observability     CloudTrail・CloudWatchダッシュボード
+```
 
-### Phase 1: CI/CDパイプライン（完了）
-- CodeConnectionsでGitHub連携を作成し、コンソールでOAuth認証を完了
-- `aws-cdk-lib/pipelines`による自己更新型CodePipelineを構築（Source→Build→SelfMutate→Dev→承認→Prod）
-- **トラブルと対処**: 初回デプロイ時、ローカルで作成した新しいコード（PipelineStack関連ファイル）をGitHubにpushし忘れたまま`cdk deploy`したため、SelfMutateステージが「GitHub上の古いコードには存在しないスタック名」を探しに行って失敗。pushし忘れに気づき、コミット・プッシュ後に再実行して解消
-- 現在、Source→Build→SelfMutate→Dev→SmokeTestまで安定して成功する状態を確認済み
+---
 
-### Phase 2: Managed Knowledge Base（進行中・一時停止中）
-- `DataStack`実装: S3生データバケット（SSE-KMS暗号化、バージョニング、サーバーアクセスログ有効）
-- `KnowledgeBaseStack`実装: Bedrock Managed Knowledge Base（`type: MANAGED`）＋S3マネージドコネクタのDataSource。CDKのL1コンストラクトが両方ともMANAGEDタイプに対応していることを事前に確認済み
-- cdk-nagの指摘（S3アクセスログ未設定、IAM読み取り系ワイルドカード）に対し、正当な理由を添えてサプレッション、またはアクセスログバケット追加で対応
-- Dev環境へのデプロイに成功し、Knowledge Base ID (`0EFAJMEAWJ`)・DataSource ID (`RFS74XRKHK`) を取得
-- 当初は`Metriever/PDF/`の7資料をテストデータとして投入したが、ユーザー指示により削除し、Web公開ドキュメント（AWS Well-Architected Frameworkホワイトペーパー、論文"Attention Is All You Need"）に差し替え
-- **現在のブロッカー**: 取り込みジョブが `IN_PROGRESS` のまま約19分間進捗ゼロで停止したように見えたため `stop-ingestion-job` を実行したが、`STOPPING` 状態からさらに約7分経過しても変化がない。原因はMKBという比較的新しいマネージド機能自体の不安定さの可能性が高く、CloudTrail/CloudWatch Logsをまだ有効化していないため詳細なログで裏付けが取れない状態
+## 6. これまでに作ったもの（Phase 0〜3、構築ログ）
 
-## 5. 今、判断待ちになっていること
+### Phase 0: プロジェクトの土台作り
 
-取り込みジョブが完全にスタックしている状況で、以下の対応案を提示中。
+**やったこと**
+- `Metriever/infra/`にCDK（TypeScript）のプロジェクトを新規作成
+- Gitが端末に入っていなかったのでwingetでインストール
+- AWSアカウントにCDKの「ブートストラップ」を実行（CDKが使う共通の置き場所・権限を用意する初回儀式）
+- `FoundationStack`を作成：KMSの鍵を2つ（ログ用・データ用）、コストが$100の予算を超えそうになったらメール通知するBudgets設定、セキュリティチェックツール（cdk-nag）の導入
 
-| 選択肢 | 内容 |
+**学んだこと**: `cdk-nag`という「作ろうとしているインフラがセキュリティのベストプラクティスに沿っているか自動チェックしてくれるツール」の最新版(v3)が、使い方を根本から変えるアップデートをしていて、想定通りに動かなかった。安定して動く一つ前のバージョン(v2.38.2)に固定して解決。
+
+### Phase 1: 自動デプロイの仕組み（CI/CDパイプライン）作り
+
+**やったこと**
+- GitHubとAWSを連携させる「CodeConnections」を設定（ブラウザでGitHubにログインして許可する作業が必要）
+- コードをpushすると自動でビルド・テスト・デプロイが走る「CodePipeline」を構築
+
+**学んだこと（失敗談）**: ローカルのパソコンで新しいコードを書いた後、**GitHubにpushするのを忘れたまま**「とりあえずAWSにデプロイしてみよう」をやってしまい、パイプラインの「自己更新」ステップが「GitHub上の（古い）コードには存在しないはずのスタック名」を探しに行って失敗した。CI/CDパイプラインは**GitHub上のコードを基準に動く**という、基本だが重要な性質を実地で確認した。
+
+### Phase 2: ナレッジベース（検索エンジン）の構築
+
+**やったこと**
+- `DataStack`：S3バケットを作成（暗号化、バージョン管理、アクセスログ記録）
+- `KnowledgeBaseStack`：Bedrock Managed Knowledge Baseを作成し、そのS3バケットをデータソースとして接続
+
+**学んだこと（失敗談と対処）**:
+1. 当初、社内の学習用PDF資料をテストデータとしてアップロードしたが、ユーザーからの指摘で「ローカル→クラウドへのデータ転送は必ず事前確認すべき」というルールに違反していたことが判明。該当ファイルを削除し、インターネット上の公開ドキュメント（AWS公式資料と論文）に差し替えた
+2. 取り込みジョブが延々と終わらずスタックする事象が発生（詳細は4章）。最終的にナレッジベースを一度削除して作り直すことで解消した
+3. ファイル名を日本語のままアップロードしたところ、文字コードの扱いの問題でS3上のファイル名が文字化けするトラブルも発生。英数字のファイル名に変更して解決
+
+### Phase 3: データ取り込みの自動化
+
+**やったこと**
+- `IngestionPipelineStack`：S3に新しいファイルが置かれたら自動的に取り込みジョブが走る仕組みを構築
+- 具体的には「S3への変更通知→SQSキューに溜める→5分ごとにEventBridge Pipeがまとめて取り出す→Step Functionsが取り込みジョブを開始して完了まで監視→失敗したらSNSでメール通知」という流れ
+- 毎日決まった時刻にも無条件で同期する「安全網」のスケジュールも追加
+
+**学んだこと（当初計画からの方針転換）**: 当初の計画書には「差分検知用にDynamoDBで変更履歴を記録する」という設計があったが、実際にBedrockの取り込みジョブのレスポンスを見ると、**新規・更新・削除されたドキュメント数を自分で勝手に判定して教えてくれる**ことが判明した。つまり「差分を自前で管理する」仕組みはAWSの機能と重複する無駄な実装だったため、計画を修正してシンプルな構成に変更した。**実際に動かしてみて初めて分かることがある**という良い例。
+
+**学んだこと（設計上の制約）**: CDKでは、「S3バケットの変更をSQSに通知する」仕組みを、バケットとは別のスタックで作ろうとすると、「AとBが互いを必要とし合う」循環依存エラーが発生することがある。これを避けるため、通知を受け取るSQSキューは、バケットと同じ`DataStack`の中に置くという設計に修正した。
+
+---
+
+## 7. Phase 4〜7（フル仕様で実装・完了）
+
+ユーザーの判断により、縮小版ではなく**計画書(`cozy-crunching-hammock.md`)通りのフル仕様**で実装した。Phase 0〜3と違い、Phase 4〜7は**コードを全部書き終えてから1回だけコミット・プッシュ**する方針で進めた（1回のパイプライン実行で8スタックすべてをまとめてデプロイするため）。
+
+### Phase 4: 検索サービス
+
+- `RetrievalServiceStack`：`AgenticRetrieveStream`を呼び出すLambda（Node.js/TypeScript）を実装
+- このAPI1回の呼び出しで、質問の分解（Query Decomposition相当）、関連度による並び替え（Managed Reranking）、複数Knowledge Base横断検索が内部的に行われる。PDF資料の06章で自前実装されていたカスタムレトリーバーのロジックを、マネージドAPIの呼び出し1つに置き換えた形
+- 呼び出すモデル（プランナー・埋め込み・リランキング）はAWS側が自動選択するため、IAM権限は「どのモデルを使うか指定できない」制約の中で、リージョン内のfoundation-model名前空間に絞った最小権限にしている
+
+### Phase 5: コンテンツ安全性とエージェント的ルーティング
+
+- `GuardrailStack`：有害コンテンツフィルタ（ヘイト・侮辱・性的・暴力・不正行為・プロンプトインジェクション）とPIIマスキング（メール・電話・氏名・住所・社会保障番号・クレジットカード番号）を設定
+- `AgentStack`：「RAGで答えるべきか」「一般知識で答えてよいか」をAIが自律的に判断し、必要に応じて検索Lambdaを呼び出す、という振る舞いをBedrockの**Converse API（ツール呼び出し機能）**で実装
+
+**重要な設計判断（当初計画からの変更）**: 当初の計画では「AgentCore Harness」というAWSのノーコード・エージェント実行基盤を使う想定だった。しかし実装時に確認したところ、Harnessは現時点でCloudFormation/CDKに対応しておらず（Gateway・Runtime・Memory・Evaluation・Policyは対応している一方、Harnessだけ未対応）、IaCで扱うには未文書化のAPIを直接叩くカスタムリソースを自作する必要があり、リスクと工数が見合わないと判断した。代わりに、AWSが公式に案内している「Converse APIのツール呼び出し機能＋Guardrail」という、より枯れた方法でエージェント的な振る舞いを実現した。機能的には「質問に応じてRAG検索するかどうかをAIが判断する」という目的を満たしている。
+
+### Phase 6: 観測性
+
+- `ObservabilityStack`：CloudTrailに「高度なイベントセレクター」を設定し、デフォルトでは記録されないBedrock Knowledge BaseとGuardrailへのアクセス（データイベント）を記録するようにした
+- Lambda（検索・エージェント）とStep Functions（取り込みパイプライン）の呼び出し回数・エラー数・処理時間を1枚のCloudWatchダッシュボードにまとめ、エラー発生時のアラームも設定
+- **当初計画からの変更**: 「AgentCore Evaluations」（AIによる自動採点機能）は、エージェントがAgentCore Runtime/Harnessとして登録されていることが前提の機能。Phase 5でHarnessを使わない判断をしたことに伴い、Evaluationsも今回は導入を見送り、CloudTrail+CloudWatchによるトレーシングで代替した
+
+### Phase 7: 仕上げ
+
+- 全スタックのIAMポリシーを目視監査。`bedrock:*`や`AmazonBedrockFullAccess`のような過度に広い権限が残っていないことを確認
+- 運用Runbook（`docs/runbook.md`）を作成：Prod昇格手順、ロールバック手順、取り込みジョブ障害時の対応、コスト確認方法、動作確認コマンド、既知の制約をまとめた
+
+---
+
+## 8. 用語集（このドキュメントに出てきた言葉）
+
+| 用語 | 意味 |
 |---|---|
-| a. さらに待つ | コストはほぼ発生しないが、再現性のない不具合に時間を使うリスク |
-| b. Data Source/Knowledge Baseを削除して作り直す（推奨） | CDK管理下のリソースなので、CLIで一度削除→再作成しても定義は失われない |
-| c. AWSサポートに問い合わせる | 根本原因を特定したい場合。FREEプランでは対応に時間がかかる可能性 |
+| RAG | Retrieval Augmented Generation。検索した情報をもとに生成AIが回答する仕組み |
+| 埋め込み（Embedding） | 文章の意味を数値のベクトルに変換したもの |
+| チャンク（Chunk） | 検索しやすいように文章を分割した小さな単位 |
+| IaC（Infrastructure as Code） | インフラの構成をコードで記述し、再現可能にする手法 |
+| CDK | IaCをTypeScript等のプログラミング言語で書けるようにするAWSのツール |
+| CloudFormation | CDKが最終的に生成する、AWSへの指示書（テンプレート） |
+| スタック（Stack） | CloudFormationで一括管理されるリソースのまとまり |
+| CI/CD | コードの変更を自動でテスト・デプロイする仕組み（継続的インテグレーション/デリバリー） |
+| cdk-nag | インフラコードのセキュリティ上の問題を自動検出するツール |
 
-## 6. このあとやろうとしていること
+---
 
-1. **直近**: 上記ブロッカーの解消（b案で作り直し予定、ユーザー承認待ち）
-2. 取り込み完了後、`Retrieve` APIで実際に検索結果が返ることを確認（例: 「What are the pillars of the AWS Well-Architected Framework?」）
-3. **Phase 3**: データ取り込みパイプラインの自動化（S3イベント→SQSデバウンス→Step Functionsでの`start-ingestion-job`自動実行、失敗時のSNSアラート）
-4. **Phase 4**: `AgenticRetrieveStream`ラッパーLambdaの実装（Query Decomposition相当の反復検索、Managed Reranking、複数Knowledge Base横断検索）
-5. **Phase 5**: Guardrails（コンテンツフィルタ）＋AgentCore Harness（RAG/一般知識/Web検索のエージェント的ルーティング）
-6. **Phase 6**: 評価・観測性基盤（CloudTrailデータイベント有効化、AgentCore Evaluations、CloudWatchダッシュボード）— これまでの技術評価で指摘した「最大の欠落点」への対応
-7. **Phase 7**: IAM最小権限の最終監査、コストレビュー、運用Runbook作成
-
-その後、Dev環境で一通り動作確認ができた段階で、`PromoteToProd`の手動承認を行いProd環境へ昇格する。
-
-## 7. 参考資料
+## 9. 参考資料
 
 - 実装計画の全文: `C:\Users\LF83993\.claude\plans\cozy-crunching-hammock.md`
-- PDF資料群の技術評価: 本セッションの会話履歴を参照（別途ドキュメント化を予定）
+- PDF資料群の技術評価: 本セッションの会話履歴を参照

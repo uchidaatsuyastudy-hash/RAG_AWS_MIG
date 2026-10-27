@@ -36,6 +36,8 @@ export interface IngestionPipelineStackProps extends cdk.StackProps {
  * ingestion unconditionally as a safety net for any missed S3 events.
  */
 export class IngestionPipelineStack extends cdk.Stack {
+  public readonly stateMachine: sfn.StateMachine;
+
   constructor(scope: Construct, id: string, props: IngestionPipelineStackProps) {
     super(scope, id, props);
 
@@ -108,10 +110,10 @@ export class IngestionPipelineStack extends cdk.Stack {
 
     const definition = startJob.next(wait).next(getJob).next(choice);
 
-    const stateMachine = new sfn.StateMachine(this, 'IngestionOrchestration', {
+    const stateMachine = (this.stateMachine = new sfn.StateMachine(this, 'IngestionOrchestration', {
       definitionBody: sfn.DefinitionBody.fromChainable(definition),
       timeout: cdk.Duration.minutes(30),
-    });
+    }));
     stateMachine.addToRolePolicy(
       new iam.PolicyStatement({
         actions: ['bedrock:StartIngestionJob', 'bedrock:GetIngestionJob'],

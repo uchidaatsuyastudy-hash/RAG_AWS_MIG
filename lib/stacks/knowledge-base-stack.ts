@@ -74,6 +74,10 @@ export class KnowledgeBaseStack extends cdk.Stack {
               bucketOwnerAccountId: this.account,
             },
           },
+          // Image extraction left at its AWS default (ENABLED) per explicit
+          // user decision — observed to be a likely contributor to multi-hour
+          // ingestion times on image-heavy PDFs (see docs/progress.md §4),
+          // but image-based retrieval is wanted, so it stays on.
         },
       },
     });
