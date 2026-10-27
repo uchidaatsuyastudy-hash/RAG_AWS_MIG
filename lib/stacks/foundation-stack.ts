@@ -44,6 +44,25 @@ export class FoundationStack extends cdk.Stack {
         },
       }),
     );
+    // The CDK Trail L2 construct only auto-grants KMS key permissions to
+    // CloudTrail when it creates the key itself; for an externally-supplied
+    // key (this one, shared across stacks) that grant must be added here.
+    this.logsKey.addToResourcePolicy(
+      new iam.PolicyStatement({
+        sid: 'AllowCloudTrailAccount',
+        principals: [new iam.ServicePrincipal('cloudtrail.amazonaws.com')],
+        actions: ['kms:GenerateDataKey*', 'kms:Decrypt*', 'kms:DescribeKey'],
+        resources: ['*'],
+        conditions: {
+          StringEquals: {
+            'aws:SourceAccount': this.account,
+          },
+          ArnLike: {
+            'kms:EncryptionContext:aws:cloudtrail:arn': `arn:${this.partition}:cloudtrail:${this.region}:${this.account}:trail/*`,
+          },
+        },
+      }),
+    );
 
     this.dataKey = new kms.Key(this, 'DataKey', {
       alias: 'metriever/data',
