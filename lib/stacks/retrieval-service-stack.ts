@@ -53,7 +53,7 @@ export class RetrievalServiceStack extends cdk.Stack {
     this.retrievalFunction.addToRolePolicy(
       new iam.PolicyStatement({
         sid: 'AgenticRetrieveOnConfiguredKnowledgeBases',
-        actions: ['bedrock:Retrieve', 'bedrock-agent-runtime:AgenticRetrieveStream'],
+        actions: ['bedrock:Retrieve', 'bedrock:AgenticRetrieveStream'],
         resources: kbArns,
       }),
     );
