@@ -1,6 +1,6 @@
 # Metriever AWS移行プロジェクト — 学習用ドキュメント
 
-最終更新: 2026-10-27
+最終更新: 2026-10-27（§8 CI/CDパイプライン・Dev/Prod運用の詳細解説を追加）
 
 このドキュメントは、進捗記録であると同時に「何を」「なぜ」「どう」作っているかを、AWSの各サービスに詳しくない人でも読めるように解説した学習用テキストです。
 
@@ -247,7 +247,100 @@ Dev / Prod Stage（最終形）
 
 ---
 
-## 8. 用語集（このドキュメントに出てきた言葉）
+## 8. CI/CDパイプラインとDev/Prod運用の詳細解説
+
+ここまでの章で軽く触れてきた「パイプライン」と「Dev/Prod」について、実際に何が起きるのかをステップごとに詳しく解説する。パイプライン自体が実際に何度も壊れて直してきたので、その実例も合わせて載せる。
+
+### 8.1 パイプラインとは何か、何のためにあるのか
+
+**何もない状態**では、インフラを変更するたびに開発者が自分のPCから`cdk deploy`コマンドを手で打つことになる。これには次の問題がある。
+
+- 手元の環境にしかない変更（pushし忘れ）をうっかりデプロイしてしまう（実際にPhase 1で発生。6章参照）
+- 「テストを通してからデプロイする」「Devで確認してからProdに反映する」という手順を徹底する仕組みがない（人が忘れる）
+- 誰が・いつ・何をデプロイしたかの記録が残りにくい
+
+**CI/CDパイプライン**は、この手作業を「GitHubにコードをpushする」という1つの操作に一本化し、その後の「ビルド→テスト→デプロイ」を全部自動でやってくれる仕組み。今回は`aws-cdk-lib/pipelines`という、CDKのアプリ自体をパイプラインの形でデプロイできるライブラリ（CDK Pipelines）を使っている。
+
+### 8.2 パイプラインの6つのステージ（`Metriever-Pipeline`）
+
+実際にAWSコンソールやCLIで見えるステージは次の6つ。`aws codepipeline get-pipeline-state`で毎回確認しているのがこの構造。
+
+```
+① Source          : GitHub(main)にpushされたことを検知し、最新コードを取得
+② Build           : CodeBuildで npm ci → npm run build → npm test → cdk synth を実行
+                     （テストが1つでも落ちたら、ここで止まる＝Devにすら届かない）
+③ UpdatePipeline  : 「パイプライン自身の定義」が変わっていないか確認し、変わっていれば
+                     パイプラインを自己更新する（CDK Pipelinesの特徴。手で更新不要）
+④ Assets          : Lambda関数のコード等、デプロイに必要な成果物をS3にアップロード
+⑤ Dev             : Dev環境へ8スタックを順番にデプロイ（8.4節で詳細）
+⑥ Prod            : 手動承認(PromoteToProd)を経て、Prod環境へ同じ8スタックをデプロイ
+```
+
+**ポイント**: ①〜④は「コードが正しく、デプロイできる状態か」を機械的に検証する工程で、人の判断は入らない。⑤Devまでは自動で進むが、⑥Prodに入る直前には必ず**人間が「Approve」ボタンを押す（または`put-approval-result`コマンドを叩く）**ステップが挟まる。これにより「DevでちゃんとテストしてからProdに反映する」という開発プロセスを、気合いではなく仕組みで強制している。
+
+### 8.3 Dev環境とProd環境の違い
+
+このプロジェクトでは、AWSアカウントもリージョンも**1つだけ**（新しいAWS体験のプロジェクト制約で複数リージョンが使えないため）。したがってDev/Prodの違いは「別のアカウント」ではなく、**同じアカウント内でスタック名のプレフィックスが違うだけ**。
+
+| | Dev | Prod |
+|---|---|---|
+| スタック名の例 | `Dev-Metriever-Foundation` | `Prod-Metriever-Foundation` |
+| 月間予算アラーム | $20 | $80 |
+| デプロイのタイミング | pushのたびに自動 | 手動承認後 |
+| 用途 | 動作確認・検証用 | 実際に使う本番用 |
+
+`ApplicationStage`（`lib/stages/application-stage.ts`）という1つの「型」から、`new ApplicationStage(this, 'Dev', {...})`と`new ApplicationStage(this, 'Prod', {...})`のように、IDだけ変えて2回インスタンス化している。中身の8スタック構成は完全に同じコードが使われる（＝「Devで動いたものと全く同じ設計図でProdを作る」ことが保証される）。
+
+### 8.4 Dev/Prodそれぞれでの8スタックのデプロイ順序
+
+1つの環境（Dev or Prod）の中では、8つのスタックが依存関係の順番通りにデプロイされる（後のスタックが前のスタックの出力値、例えばKMS鍵のARNやナレッジベースIDを必要とするため）。
+
+```
+Foundation → Data → KnowledgeBase → IngestionPipeline
+                                  → RetrievalService → Guardrail → Agent → Observability
+```
+
+それぞれのスタックのデプロイは、CloudFormationの中で「Prepare（変更内容の計算＝チェンジセット作成）」と「Deploy（実際に反映）」の2段階に分かれている。`get-pipeline-state`で見える`Metriever-XXX.Prepare` / `Metriever-XXX.Deploy`という表示はこれに対応する。
+
+### 8.5 実際に発生した失敗と、そこから学んだこと（Dev/Prod分離特有の罠）
+
+Phase 4〜7をまとめてデプロイした後、Devは成功したがProdで立て続けに失敗した。これは**Dev/Prodが「同じアカウント内の別スタック」である**という、このプロジェクト特有の構成に起因するもので、学びが大きいので詳しく残す。
+
+**① Observabilityスタック: CloudTrailがKMS鍵を使えない**
+
+- 症状: `Dev-Metriever-Observability`の作成が失敗（`CreateFailed`）
+- 原因: CloudTrail（証跡）を、共有のKMS鍵（`FoundationStack`が作る`logsKey`）で暗号化する設定にしていたが、そのKMS鍵のポリシーには「CloudWatch Logsサービスがこの鍵を使ってよい」という許可しか書かれておらず、「CloudTrailサービスがこの鍵を使ってよい」という許可が抜けていた
+- なぜ気づきにくいか: CDKの`Trail`という部品（L2コンストラクト）は、**自分でKMS鍵を新規作成した場合は**鍵のポリシーを自動で設定してくれるが、**既存の（他のスタックで作った）鍵を渡した場合は**その自動設定が働かない、という仕様がある。今回は複数のスタックでログ暗号化用に鍵を使い回していたため、この「落とし穴」にはまった
+- 対処: `FoundationStack`のKMS鍵ポリシーに、CloudTrailサービスプリンシパル(`cloudtrail.amazonaws.com`)向けの許可を手動で追加した
+
+**② Foundationスタック: KMSエイリアス名の衝突**
+
+- 症状: Prodの`Metriever-Foundation`のチェンジセット作成が失敗（`ResourceExistenceCheck`フック失敗）
+- 原因: KMS鍵の「エイリアス」（`metriever/logs`のような分かりやすい別名）を、Dev/Prod共通の固定文字列でコードに書いていた。**KMSのエイリアス名はアカウント全体・リージョン全体で重複できない**（CloudFormationのスタック単位ではない）ため、Devが先に`metriever/logs`を使ってしまうと、後から同じ名前でProdが作ろうとして衝突する
+- 対処: `metriever/dev/logs`・`metriever/prod/logs`のように、環境名を名前に埋め込むよう修正（`envName`というプロパティを追加し、`ApplicationStage`から全スタックに渡す設計にした）
+
+**③ Guardrail・Knowledge Base・CloudTrail・ダッシュボード: 同種の名前衝突が他にも4箇所**
+
+- ②と全く同じ理由（名前がアカウント/リージョン単位で一意という制約）で、以下もDev/Prodで衝突することが判明し、同様に修正した
+  - `GuardrailStack`のガードレール名
+  - `KnowledgeBaseStack`のIAMロール名・Knowledge Base名・データソース名
+  - `ObservabilityStack`のCloudTrail証跡名・CloudWatchダッシュボード名
+- **教訓**: AWSのリソース名には、「CloudFormationのスタックの中でだけユニークであればよいもの」（ほとんどのリソース。何も指定しなければCDKが自動でユニークな物理名を生成してくれる）と、「アカウント全体・リージョン全体でユニークでなければならないもの」（KMSエイリアス、IAMロール名、Bedrock Guardrail/Knowledge Base名、CloudTrail証跡名、CloudWatchダッシュボード名など、名前を自分で明示的に指定する種類のリソースに多い）の2種類がある。**同じCDKコードをDev/Prodのように複数回デプロイする設計（Stageパターン）では、後者に該当する名前には必ず環境名などの識別子を含める必要がある**。この失敗が起きるまでは意識していなかった盲点だった
+
+**④ 壊れたスタックの復旧パターン（`ROLLBACK_COMPLETE`）**
+
+- 上記①〜③のような失敗が起きると、CloudFormationは作りかけのリソースを自動的に巻き戻す（ロールバック）が、スタック自体は`ROLLBACK_COMPLETE`という状態で残る
+- `ROLLBACK_COMPLETE`状態のスタックは、**CloudFormationの仕様上そのまま更新できない**（「一度失敗した工事現場に、そのまま次の工事を重ねることはできない」イメージ）。必ず一度削除してから、同じCDKコードで作り直す必要がある
+- 復旧の手順（今回4回実施）: `aws cloudformation delete-stack` → `aws cloudformation wait stack-delete-complete` → パイプラインを再実行（`retry-stage-execution`または新しいコミットのpush）
+- この手順は`docs/runbook.md`の3章にも汎用的な対応手順として記載している
+
+### 8.6 なぜ「1回の修正→pushのたびにパイプラインが全部流れる」のか
+
+このプロジェクトでは、インフラの設定ミスが見つかるたびに「コード修正→ビルド・テスト→コミット→push」を繰り返した。pushするたびにパイプラインの①Sourceから自動的に再始動し、②Build（テスト）を再度通過しないと③以降に進めない。これにより、「直したつもりが実は壊れている」状態のままDev/Prodに届いてしまうことを防いでいる。実際、本セッションでも複数回の失敗・修正・再pushのサイクルを経て、最終的にDev・Prod双方の全8スタックのデプロイに成功した。
+
+---
+
+## 9. 用語集（このドキュメントに出てきた言葉）
 
 | 用語 | 意味 |
 |---|---|
@@ -263,7 +356,7 @@ Dev / Prod Stage（最終形）
 
 ---
 
-## 9. 参考資料
+## 10. 参考資料
 
 - 実装計画の全文: `C:\Users\LF83993\.claude\plans\cozy-crunching-hammock.md`
 - PDF資料群の技術評価: 本セッションの会話履歴を参照
