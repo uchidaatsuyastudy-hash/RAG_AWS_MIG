@@ -5,6 +5,9 @@ import * as kms from 'aws-cdk-lib/aws-kms';
 
 export interface GuardrailStackProps extends cdk.StackProps {
   readonly dataKey: kms.IKey;
+  /** Lowercase environment name (e.g. 'dev', 'prod'); Bedrock guardrail
+   * names are unique per account/Region, not per stack. */
+  readonly envName: string;
 }
 
 const HARMFUL_CONTENT_TYPES = ['HATE', 'INSULTS', 'SEXUAL', 'VIOLENCE', 'MISCONDUCT'];
@@ -23,7 +26,7 @@ export class GuardrailStack extends cdk.Stack {
     super(scope, id, props);
 
     const guardrail = new bedrock.CfnGuardrail(this, 'Guardrail', {
-      name: 'metriever-guardrail',
+      name: `metriever-guardrail-${props.envName}`,
       description: 'Content safety and PII handling for the Metriever RAG agent.',
       blockedInputMessaging: 'This request cannot be processed because it violates content guidelines.',
       blockedOutputsMessaging: 'The generated response was withheld because it violated content guidelines.',

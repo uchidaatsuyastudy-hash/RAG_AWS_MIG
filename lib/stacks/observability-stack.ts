@@ -14,6 +14,10 @@ export interface ObservabilityStackProps extends cdk.StackProps {
   readonly retrievalFunction: lambda.IFunction;
   readonly agentFunction: lambda.IFunction;
   readonly ingestionStateMachine: sfn.IStateMachine;
+  /** Lowercase environment name (e.g. 'dev', 'prod'); CloudTrail trail names
+   * and CloudWatch dashboard names are unique per account/Region, not per
+   * stack. */
+  readonly envName: string;
 }
 
 /**
@@ -31,7 +35,7 @@ export class ObservabilityStack extends cdk.Stack {
     super(scope, id, props);
 
     const trail = new cloudtrail.Trail(this, 'DataEventTrail', {
-      trailName: 'metriever-data-events',
+      trailName: `metriever-data-events-${props.envName}`,
       encryptionKey: props.logsKey,
       sendToCloudWatchLogs: true,
       cloudWatchLogsRetention: cdk.aws_logs.RetentionDays.ONE_MONTH,
@@ -63,7 +67,9 @@ export class ObservabilityStack extends cdk.Stack {
       },
     ];
 
-    const dashboard = new cloudwatch.Dashboard(this, 'MetrieverDashboard', { dashboardName: 'Metriever' });
+    const dashboard = new cloudwatch.Dashboard(this, 'MetrieverDashboard', {
+      dashboardName: `Metriever-${props.envName}`,
+    });
     dashboard.addWidgets(
       new cloudwatch.GraphWidget({
         title: 'Agent Lambda (invocations / errors / duration)',

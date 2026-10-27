@@ -48,6 +48,7 @@ export class ApplicationStage extends cdk.Stage {
     const kb = new KnowledgeBaseStack(this, 'Metriever-KnowledgeBase', {
       rawDocsBucket: data.rawDocsBucket,
       dataKey: foundation.dataKey,
+      envName: props.envName,
     });
 
     const ingestion = new IngestionPipelineStack(this, 'Metriever-IngestionPipeline', {
@@ -65,6 +66,7 @@ export class ApplicationStage extends cdk.Stage {
 
     const guardrail = new GuardrailStack(this, 'Metriever-Guardrail', {
       dataKey: foundation.dataKey,
+      envName: props.envName,
     });
 
     const agent = new AgentStack(this, 'Metriever-Agent', {
@@ -81,6 +83,7 @@ export class ApplicationStage extends cdk.Stage {
       retrievalFunction: retrievalService.retrievalFunction,
       agentFunction: agent.agentFunction,
       ingestionStateMachine: ingestion.stateMachine,
+      envName: props.envName,
     });
   }
 }

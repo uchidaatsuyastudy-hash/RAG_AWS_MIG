@@ -9,6 +9,10 @@ import { NagSuppressions } from 'cdk-nag';
 export interface KnowledgeBaseStackProps extends cdk.StackProps {
   readonly rawDocsBucket: s3.IBucket;
   readonly dataKey: kms.IKey;
+  /** Lowercase environment name (e.g. 'dev', 'prod'); IAM role names and
+   * Bedrock resource names are unique per account/Region, not per stack, so
+   * Dev and Prod must not share these literal names. */
+  readonly envName: string;
 }
 
 /**
@@ -27,7 +31,7 @@ export class KnowledgeBaseStack extends cdk.Stack {
     this.terminationProtection = true;
 
     const role = new iam.Role(this, 'KnowledgeBaseRole', {
-      roleName: 'AmazonBedrockExecutionRoleForKB-metriever',
+      roleName: `AmazonBedrockExecutionRoleForKB-metriever-${props.envName}`,
       assumedBy: new iam.ServicePrincipal('bedrock.amazonaws.com', {
         conditions: {
           StringEquals: { 'aws:SourceAccount': this.account },
@@ -50,7 +54,7 @@ export class KnowledgeBaseStack extends cdk.Stack {
     );
 
     const knowledgeBase = new bedrock.CfnKnowledgeBase(this, 'KnowledgeBase', {
-      name: 'metriever-kb',
+      name: `metriever-kb-${props.envName}`,
       roleArn: role.roleArn,
       knowledgeBaseConfiguration: {
         type: 'MANAGED',
@@ -62,7 +66,7 @@ export class KnowledgeBaseStack extends cdk.Stack {
 
     const dataSource = new bedrock.CfnDataSource(this, 'DataSource', {
       knowledgeBaseId: knowledgeBase.attrKnowledgeBaseId,
-      name: 'metriever-raw-docs',
+      name: `metriever-raw-docs-${props.envName}`,
       dataSourceConfiguration: {
         type: 'MANAGED_KNOWLEDGE_BASE_CONNECTOR',
         managedKnowledgeBaseConnectorConfiguration: {
