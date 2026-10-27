@@ -52,9 +52,22 @@ export class RetrievalServiceStack extends cdk.Stack {
 
     this.retrievalFunction.addToRolePolicy(
       new iam.PolicyStatement({
-        sid: 'AgenticRetrieveOnConfiguredKnowledgeBases',
-        actions: ['bedrock:Retrieve', 'bedrock:AgenticRetrieveStream'],
+        sid: 'RetrieveOnConfiguredKnowledgeBases',
+        actions: ['bedrock:Retrieve'],
         resources: kbArns,
+      }),
+    );
+    // bedrock:AgenticRetrieveStream does not support scoping to a
+    // knowledge-base resource ARN (confirmed empirically: a role granted the
+    // action only on specific KB ARNs gets AccessDeniedException, while a
+    // role with a "*" resource grant succeeds) — it takes Resource: "*",
+    // like other Bedrock actions with no resource type in the IAM service
+    // reference (e.g. bedrock:CreateKnowledgeBase).
+    this.retrievalFunction.addToRolePolicy(
+      new iam.PolicyStatement({
+        sid: 'AgenticRetrieveStreamNoResourceType',
+        actions: ['bedrock:AgenticRetrieveStream'],
+        resources: ['*'],
       }),
     );
     this.retrievalFunction.addToRolePolicy(
@@ -75,7 +88,7 @@ export class RetrievalServiceStack extends cdk.Stack {
         {
           id: 'AwsSolutions-IAM5',
           reason:
-            "bedrock:InvokeModel* is scoped to the foundation-model/* namespace in this Region only, because AgenticRetrieveStream's MANAGED planner/embedding/reranking model selection is AWS-internal and does not expose specific model ARNs to the caller to scope to.",
+            "bedrock:InvokeModel* is scoped to the foundation-model/* namespace in this Region only, because AgenticRetrieveStream's MANAGED planner/embedding/reranking model selection is AWS-internal and does not expose specific model ARNs to the caller to scope to. bedrock:AgenticRetrieveStream uses Resource: '*' because the action does not support a knowledge-base resource type (confirmed empirically via AccessDeniedException when scoped).",
         },
         {
           id: 'AwsSolutions-L1',
