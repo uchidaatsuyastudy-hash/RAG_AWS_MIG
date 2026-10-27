@@ -55,6 +55,7 @@ export class PipelineStack extends cdk.Stack {
     const devStage = pipeline.addStage(
       new ApplicationStage(this, 'Dev', {
         env: { account: this.account, region: this.region },
+        envName: 'dev',
         budgetAlertEmail: props.devBudgetAlertEmail,
         monthlyBudgetLimitUsd: 20,
         ingestionFailureAlertEmail: props.devIngestionFailureAlertEmail,
@@ -69,6 +70,7 @@ export class PipelineStack extends cdk.Stack {
     pipeline.addStage(
       new ApplicationStage(this, 'Prod', {
         env: { account: this.account, region: this.region },
+        envName: 'prod',
         budgetAlertEmail: props.prodBudgetAlertEmail,
         monthlyBudgetLimitUsd: 80,
         ingestionFailureAlertEmail: props.prodIngestionFailureAlertEmail,

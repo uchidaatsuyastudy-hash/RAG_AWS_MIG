@@ -9,6 +9,7 @@ describe('cdk-nag AwsSolutionsChecks', () => {
     const app = new cdk.App();
     const stack = new FoundationStack(app, 'TestFoundation', {
       env: { account: '123456789012', region: 'ap-southeast-2' },
+      envName: 'test',
       budgetAlertEmail: 'test@example.com',
     });
     Aspects.of(stack).add(new AwsSolutionsChecks());

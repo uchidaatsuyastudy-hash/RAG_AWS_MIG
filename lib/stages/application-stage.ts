@@ -12,6 +12,9 @@ import { AgentStack } from '../stacks/agent-stack';
 import { ObservabilityStack } from '../stacks/observability-stack';
 
 export interface ApplicationStageProps extends cdk.StageProps {
+  /** Lowercase environment name (e.g. 'dev', 'prod'); used to keep
+   * stage-shared resource names (KMS aliases, etc.) unique across stages. */
+  readonly envName: string;
   /** Email address to receive AWS Budgets alerts for this stage's spend. */
   readonly budgetAlertEmail?: string;
   readonly monthlyBudgetLimitUsd?: number;
@@ -25,7 +28,7 @@ export interface ApplicationStageProps extends cdk.StageProps {
  * are automatically prefixed with the Stage name (e.g. `Dev-Metriever-Foundation`).
  */
 export class ApplicationStage extends cdk.Stage {
-  constructor(scope: Construct, id: string, props: ApplicationStageProps = {}) {
+  constructor(scope: Construct, id: string, props: ApplicationStageProps) {
     super(scope, id, props);
 
     // cdk-nag Aspects added at the App level do not automatically propagate
@@ -33,6 +36,7 @@ export class ApplicationStage extends cdk.Stage {
     Aspects.of(this).add(new AwsSolutionsChecks({ verbose: true }));
 
     const foundation = new FoundationStack(this, 'Metriever-Foundation', {
+      envName: props.envName,
       budgetAlertEmail: props.budgetAlertEmail,
       monthlyBudgetLimitUsd: props.monthlyBudgetLimitUsd,
     });

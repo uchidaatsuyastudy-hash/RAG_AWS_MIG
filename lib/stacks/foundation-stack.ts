@@ -12,6 +12,10 @@ export interface FoundationStackProps extends cdk.StackProps {
   readonly budgetAlertEmail?: string;
   /** Monthly budget limit in USD. Defaults to the FREE plan credit of $100. */
   readonly monthlyBudgetLimitUsd?: number;
+  /** Lowercase environment name (e.g. 'dev', 'prod'), used to keep KMS
+   * alias names unique across stages — aliases are unique per account/Region,
+   * not per stack, so Dev and Prod cannot share one. */
+  readonly envName: string;
 }
 
 /**
@@ -22,11 +26,11 @@ export class FoundationStack extends cdk.Stack {
   public readonly logsKey: kms.Key;
   public readonly dataKey: kms.Key;
 
-  constructor(scope: Construct, id: string, props: FoundationStackProps = {}) {
+  constructor(scope: Construct, id: string, props: FoundationStackProps) {
     super(scope, id, props);
 
     this.logsKey = new kms.Key(this, 'LogsKey', {
-      alias: 'metriever/logs',
+      alias: `metriever/${props.envName}/logs`,
       description: 'CMK for CloudWatch Logs, CloudTrail, and Bedrock data-event encryption',
       enableKeyRotation: true,
       removalPolicy: cdk.RemovalPolicy.RETAIN,
@@ -65,7 +69,7 @@ export class FoundationStack extends cdk.Stack {
     );
 
     this.dataKey = new kms.Key(this, 'DataKey', {
-      alias: 'metriever/data',
+      alias: `metriever/${props.envName}/data`,
       description: 'CMK for S3, DynamoDB, SNS, and Secrets Manager encryption',
       enableKeyRotation: true,
       removalPolicy: cdk.RemovalPolicy.RETAIN,
