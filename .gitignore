@@ -6,3 +6,9 @@ node_modules
 # CDK asset staging directory
 .cdk.staging
 cdk.out
+
+# Scratch files used during development (commit message drafts, smoke-test payloads)
+.commitmsg.txt
+payload-*.json
+out_*.json
+test-*.mjs
