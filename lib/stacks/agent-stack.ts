@@ -13,6 +13,9 @@ export interface AgentStackProps extends cdk.StackProps {
   readonly guardrailId: string;
   readonly guardrailVersion: string;
   readonly logsKey: kms.IKey;
+  /** The KMS key the Guardrail is encrypted with (GuardrailStack's dataKey).
+   * ApplyGuardrail needs kms:Decrypt on this key to read the guardrail config. */
+  readonly guardrailKey: kms.IKey;
   /** Claude model ID or inference profile ID to invoke. Defaults to the `au.`
    * geographic inference profile — Claude Sonnet 4.6 does not support
    * on-demand (direct) invocation, so a profile is required; `au.` keeps
@@ -83,6 +86,7 @@ export class AgentStack extends cdk.Stack {
         resources: [`arn:${this.partition}:bedrock:${this.region}:${this.account}:guardrail/${props.guardrailId}`],
       }),
     );
+    props.guardrailKey.grantDecrypt(this.agentFunction);
 
     NagSuppressions.addResourceSuppressions(
       this.agentFunction,
@@ -100,6 +104,10 @@ export class AgentStack extends cdk.Stack {
           id: 'AwsSolutions-IAM5',
           reason: "Function.grantInvoke()'s trailing ':*' is CDK's standard pattern to allow invoking any version/alias of this specific function; the resource is still scoped to one function ARN, not a wildcard across functions.",
           appliesTo: ['Resource::<RetrievalService82B07310.Arn>:*'],
+        },
+        {
+          id: 'AwsSolutions-IAM5',
+          reason: "KMS Key.grantDecrypt() generates CDK's standard scoped grant limited to this specific key's ARN; required so ApplyGuardrail can read the guardrail configuration, which is encrypted with this key.",
         },
       ],
       true,

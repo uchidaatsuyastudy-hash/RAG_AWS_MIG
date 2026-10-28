@@ -74,6 +74,7 @@ export class ApplicationStage extends cdk.Stage {
       guardrailId: guardrail.guardrailId,
       guardrailVersion: guardrail.guardrailVersion,
       logsKey: foundation.logsKey,
+      guardrailKey: foundation.dataKey,
     });
 
     new ObservabilityStack(this, 'Metriever-Observability', {
