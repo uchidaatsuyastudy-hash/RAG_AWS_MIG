@@ -88,6 +88,18 @@ export class AgentStack extends cdk.Stack {
     );
     props.guardrailKey.grantDecrypt(this.agentFunction);
 
+    // Anthropic models on Bedrock are distributed via AWS Marketplace; the
+    // first invocation under a given IAM principal auto-subscribes, which
+    // requires these two Marketplace actions. Neither supports resource-level
+    // scoping (subscription is account/model-wide, not ARN-addressable).
+    this.agentFunction.addToRolePolicy(
+      new iam.PolicyStatement({
+        sid: 'MarketplaceAutoSubscribeForAnthropicModels',
+        actions: ['aws-marketplace:ViewSubscriptions', 'aws-marketplace:Subscribe'],
+        resources: ['*'],
+      }),
+    );
+
     NagSuppressions.addResourceSuppressions(
       this.agentFunction,
       [
@@ -108,6 +120,10 @@ export class AgentStack extends cdk.Stack {
         {
           id: 'AwsSolutions-IAM5',
           reason: "KMS Key.grantDecrypt() generates CDK's standard scoped grant limited to this specific key's ARN; required so ApplyGuardrail can read the guardrail configuration, which is encrypted with this key.",
+        },
+        {
+          id: 'AwsSolutions-IAM5',
+          reason: 'aws-marketplace:ViewSubscriptions/Subscribe have no resource type to scope to (AWS Marketplace model subscriptions are account/model-wide, not ARN-addressable) and are required for the one-time auto-subscription to Anthropic models on first invocation.',
         },
       ],
       true,
