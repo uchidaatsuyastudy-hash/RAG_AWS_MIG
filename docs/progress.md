@@ -1,6 +1,6 @@
 # Metriever AWS移行プロジェクト — 学習用ドキュメント
 
-最終更新: 2026-10-28（§8.7 スモークテストで判明したAgentのMarketplace制限を追記）
+最終更新: 2026-10-28（§8.6 スモークテストで発見した6つの不具合をすべて解消、Dev環境でのエンドツーエンド動作確認を追記）
 
 このドキュメントは、進捗記録であると同時に「何を」「なぜ」「どう」作っているかを、AWSの各サービスに詳しくない人でも読めるように解説した学習用テキストです。
 
@@ -334,7 +334,7 @@ Phase 4〜7をまとめてデプロイした後、Devは成功したがProdで�
 - 復旧の手順（今回4回実施）: `aws cloudformation delete-stack` → `aws cloudformation wait stack-delete-complete` → パイプラインを再実行（`retry-stage-execution`または新しいコミットのpush）
 - この手順は`docs/runbook.md`の3章にも汎用的な対応手順として記載している
 
-### 8.6 スモークテストで判明した一連の不具合とAgentの未解決事項
+### 8.6 スモークテストで判明した一連の不具合と解決
 
 Phase 4〜7のデプロイ成功後、実際にLambdaを呼び出すスモークテストを行ったところ、RetrievalService（検索のみ）は一発で正しく動作したが、Agent（RAG/一般知識の振り分け）では立て続けに4つの問題が見つかった。1つずつ切り分けて直していく過程を記録する。
 
@@ -348,11 +348,11 @@ Phase 4〜7のデプロイ成功後、実際にLambdaを呼び出すスモーク
 
 **⑤ Anthropicモデルの初回利用フォーム未提出**: ④を直した後、`ResourceNotFoundException`（use case詳細未提出）。AWSコンソールのBedrock Playgroundで一度Claudeモデルを開くとこのフォームが表示されるため、ユーザーに提出してもらった
 
-**⑥ AWS MarketplaceのFREEプラン制限（未解決・ユーザー判断で保留）**: ⑤の後、今度は「IAMロールにAWS Marketplaceアクション（`aws-marketplace:Subscribe`等）の権限がない」という`AccessDeniedException`。まずLambdaの実行ロールにこの権限を追加したが解消せず、さらに調査したところ、**管理者権限ロール(`AdministratorAccess`相当)でBedrock Playgroundから直接呼び出しても同じエラーが発生する**ことを確認した。これはIAMポリシーの不足ではなく、「新しいAWS体験」のFREEプランの制約が原因と判断した。
+**⑥ AWS Marketplaceサブスクリプション未完了（解消済み）**: ⑤の後、今度は「IAMロールにAWS Marketplaceアクション（`aws-marketplace:Subscribe`等）の権限がない」という`AccessDeniedException`。まずLambdaの実行ロールにこの権限を追加したが解消せず、さらに調査したところ、**管理者権限ロール(`AdministratorAccess`相当)でBedrock Playgroundから直接呼び出しても同じエラーが発生する**ことを確認した。これはIAMポリシーの不足ではなく、アカウント側でこのモデルのサブスクリプションがまだ完了していないことが原因と判断した。
 
-AnthropicのClaudeモデルはAWS Marketplace経由で提供される従量課金製品であり、アカウントで初めて呼び出す際にBedrockが裏側で自動サブスクリプションを試みる。ところがFREEプランでは、AWS Marketplaceの利用が「Bedrock and Free only」（無料のリスティングのみ）に制限されており、Claudeのような有料Marketplace製品のサブスクリプション自体がブロックされる。一方、RetrievalService側の`AgenticRetrieveStream`が問題なく動いたのは、内部で使うプランナー/埋め込み/リランクモデルの選定・呼び出しをAWS側が完全に代行しており、呼び出し元が自分でMarketplace製品をサブスクライブする必要がないためだと考えられる。
+AnthropicのClaudeモデルはAWS Marketplace経由で提供される従量課金製品であり、アカウントで初めて呼び出す際にBedrockが裏側で自動サブスクリプションを試みる。Lambda経由での呼び出しではこの自動サブスクリプションが完了しなかったため、Bedrockコンソールの**Playground**でClaude Sonnet 4.6を一度開いて対話したところ、サブスクリプションが完了し、以降はLambda経由の呼び出しも含めて正常に動作するようになった。一方、RetrievalService側の`AgenticRetrieveStream`が最初から問題なく動いたのは、内部で使うプランナー/埋め込み/リランクモデルの選定・呼び出しをAWS側が完全に代行しており、呼び出し元が自分でMarketplace製品をサブスクライブする必要がないためだと考えられる。
 
-対応の選択肢は、(a) 有料プランへのアップグレード、(b) Amazon Nova等のAWS Marketplace製品でないモデルへの切り替え、の2つを提示したが、ユーザーの判断で**どちらも今は実施せず、原因究明の記録のみ残す**ことになった。したがって現時点でAgent（RAG/一般知識の振り分け機能）はFREEプランのままでは動作しない既知の制約として残っている（詳細は`runbook.md`§7）。
+**最終確認**: サブスクリプション完了後、Agent Lambdaに一般知識質問（「富士山の標高は？」）とRAG質問（「What are the pillars of the AWS Well-Architected Framework?」）の両方を投げ、前者は「ナレッジベースには該当情報がないため一般知識で回答」という適切な判断、後者は「ナレッジベースから6つの柱を正しく回答（出典明記）」という適切な判断を、それぞれ`search_knowledge_base`ツールを実際に呼び出した上で行うことを確認した。これによりPhase 4〜7で構築した全機能（RetrievalService・Guardrail・Agent）がDev環境でエンドツーエンドに動作することが実証された。
 
 ### 8.7 なぜ「1回の修正→pushのたびにパイプラインが全部流れる」のか
 
