@@ -1,6 +1,6 @@
 # Metriever AWS移行プロジェクト — 学習用ドキュメント
 
-最終更新: 2026-10-27（§8 CI/CDパイプライン・Dev/Prod運用の詳細解説を追加）
+最終更新: 2026-10-28（§8.7 スモークテストで判明したAgentのMarketplace制限を追記）
 
 このドキュメントは、進捗記録であると同時に「何を」「なぜ」「どう」作っているかを、AWSの各サービスに詳しくない人でも読めるように解説した学習用テキストです。
 
@@ -334,7 +334,27 @@ Phase 4〜7をまとめてデプロイした後、Devは成功したがProdで�
 - 復旧の手順（今回4回実施）: `aws cloudformation delete-stack` → `aws cloudformation wait stack-delete-complete` → パイプラインを再実行（`retry-stage-execution`または新しいコミットのpush）
 - この手順は`docs/runbook.md`の3章にも汎用的な対応手順として記載している
 
-### 8.6 なぜ「1回の修正→pushのたびにパイプラインが全部流れる」のか
+### 8.6 スモークテストで判明した一連の不具合とAgentの未解決事項
+
+Phase 4〜7のデプロイ成功後、実際にLambdaを呼び出すスモークテストを行ったところ、RetrievalService（検索のみ）は一発で正しく動作したが、Agent（RAG/一般知識の振り分け）では立て続けに4つの問題が見つかった。1つずつ切り分けて直していく過程を記録する。
+
+**① IAMアクション名の誤記**: `bedrock-agent-runtime:AgenticRetrieveStream`という存在しない名前空間を指定していた。正しくは`bedrock:AgenticRetrieveStream`（`bedrock:Retrieve`と同じ名前空間）。AWS公式スキルの参照資料にもこの点の明記がなく、実際にLambdaを呼び出して初めて発覚した
+
+**② `AgenticRetrieveStream`はリソース単位の権限指定に対応していない**: ①を直した後も同じエラーが継続。管理者ロール（`Resource: "*"`相当）では成功し、Knowledge Base ARNに絞った権限では失敗することを比較検証し、このアクションが`bedrock:CreateKnowledgeBase`などと同様に「リソースタイプなし＝`Resource: "*"`必須」のアクションだと判明。`bedrock:Retrieve`はリソース単位の指定を維持し、`bedrock:AgenticRetrieveStream`だけ`"*"`に分離した
+
+**③ Claude Sonnet 4.6はオンデマンド（直接）呼び出し非対応**: Agent側のモデル呼び出しで`ValidationException`が発生。このモデルは「推論プロファイル」経由でのみ呼び出し可能だった。`au.anthropic.claude-sonnet-4-6`（オーストラリア域内＝ap-southeast-2/ap-southeast-4のみでルーティングされる地理的プロファイル）を採用し、`global.`（世界中にルーティングされうる）は意図的に避けた。IAM権限も「プロファイルのARN」と「実体のモデルARN（両リージョン分）」の両方が必要だった
+
+**④ GuardrailのKMS鍵へのdecrypt権限漏れ**: ③を直した後、「ガードレールのKMS鍵にアクセスできない」エラー。`GuardrailStack`はFoundationStackの共有KMS鍵（`dataKey`）でガードレール設定を暗号化していたが、`AgentStack`側にその鍵への`kms:Decrypt`権限を渡し忘れていた（①②③と同種の「権限の渡し忘れ」パターン）
+
+**⑤ Anthropicモデルの初回利用フォーム未提出**: ④を直した後、`ResourceNotFoundException`（use case詳細未提出）。AWSコンソールのBedrock Playgroundで一度Claudeモデルを開くとこのフォームが表示されるため、ユーザーに提出してもらった
+
+**⑥ AWS MarketplaceのFREEプラン制限（未解決・ユーザー判断で保留）**: ⑤の後、今度は「IAMロールにAWS Marketplaceアクション（`aws-marketplace:Subscribe`等）の権限がない」という`AccessDeniedException`。まずLambdaの実行ロールにこの権限を追加したが解消せず、さらに調査したところ、**管理者権限ロール(`AdministratorAccess`相当)でBedrock Playgroundから直接呼び出しても同じエラーが発生する**ことを確認した。これはIAMポリシーの不足ではなく、「新しいAWS体験」のFREEプランの制約が原因と判断した。
+
+AnthropicのClaudeモデルはAWS Marketplace経由で提供される従量課金製品であり、アカウントで初めて呼び出す際にBedrockが裏側で自動サブスクリプションを試みる。ところがFREEプランでは、AWS Marketplaceの利用が「Bedrock and Free only」（無料のリスティングのみ）に制限されており、Claudeのような有料Marketplace製品のサブスクリプション自体がブロックされる。一方、RetrievalService側の`AgenticRetrieveStream`が問題なく動いたのは、内部で使うプランナー/埋め込み/リランクモデルの選定・呼び出しをAWS側が完全に代行しており、呼び出し元が自分でMarketplace製品をサブスクライブする必要がないためだと考えられる。
+
+対応の選択肢は、(a) 有料プランへのアップグレード、(b) Amazon Nova等のAWS Marketplace製品でないモデルへの切り替え、の2つを提示したが、ユーザーの判断で**どちらも今は実施せず、原因究明の記録のみ残す**ことになった。したがって現時点でAgent（RAG/一般知識の振り分け機能）はFREEプランのままでは動作しない既知の制約として残っている（詳細は`runbook.md`§7）。
+
+### 8.7 なぜ「1回の修正→pushのたびにパイプラインが全部流れる」のか
 
 このプロジェクトでは、インフラの設定ミスが見つかるたびに「コード修正→ビルド・テスト→コミット→push」を繰り返した。pushするたびにパイプラインの①Sourceから自動的に再始動し、②Build（テスト）を再度通過しないと③以降に進めない。これにより、「直したつもりが実は壊れている」状態のままDev/Prodに届いてしまうことを防いでいる。実際、本セッションでも複数回の失敗・修正・再pushのサイクルを経て、最終的にDev・Prod双方の全8スタックのデプロイに成功した。
 
